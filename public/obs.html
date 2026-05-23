@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OBS Banner Overlay</title>
+  <style>
+    /* Full transparent and unselectable overlay */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: transparent !important;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+    }
+
+    #wrapper {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: transparent;
+      overflow: hidden;
+    }
+
+    /* Locked aspect ratio box */
+    #ratio-container {
+      position: relative;
+      overflow: hidden;
+      background: transparent;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    /* Transition Layer System */
+    .media-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+      background: transparent;
+      will-change: transform, opacity;
+      transform: translate3d(0, 0, 0);
+    }
+
+    .media-layer img, .media-layer video {
+      width: 100%;
+      height: 100%;
+      border: none;
+      outline: none;
+      display: block;
+    }
+
+    /* Transitions Rules (Set speed programmatically via CSS variables) */
+    .transition-active {
+      transition: transform var(--transition-speed, 500ms) cubic-bezier(0.4, 0, 0.2, 1),
+                  opacity var(--transition-speed, 500ms) cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Transition States */
+    
+    /* 1. FADE */
+    .fade-visible {
+      opacity: 1;
+      transform: scale(1);
+    }
+    .fade-hidden {
+      opacity: 0;
+      transform: scale(1);
+    }
+
+    /* 2. SLIDE HORIZONTAL */
+    .slide-h-visible {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    .slide-h-left {
+      opacity: 0;
+      transform: translate3d(-100%, 0, 0);
+    }
+    .slide-h-right {
+      opacity: 0;
+      transform: translate3d(100%, 0, 0);
+    }
+
+    /* 3. SLIDE VERTICAL */
+    .slide-v-visible {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+    .slide-v-top {
+      opacity: 0;
+      transform: translate3d(0, -100%, 0);
+    }
+    .slide-v-bottom {
+      opacity: 0;
+      transform: translate3d(0, 100%, 0);
+    }
+
+    /* 4. ZOOM SCALE */
+    .zoom-visible {
+      opacity: 1;
+      transform: scale(1) translate3d(0, 0, 0);
+    }
+    .zoom-hidden {
+      opacity: 0;
+      transform: scale(0.85) translate3d(0, 0, 0);
+    }
+
+    /* 5. INSTANT (NONE) */
+    .none-visible {
+      opacity: 1;
+    }
+    .none-hidden {
+      opacity: 0;
+    }
+
+    /* Debug indicator (shows briefly on connect or if error happens) */
+    #debug-msg {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      font-size: 10px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+      pointer-events: none;
+      font-family: monospace;
+      z-index: 100;
+    }
+    #debug-msg.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="wrapper">
+    <div id="ratio-container">
+      <!-- Two layers for glitch-free buffered transitions -->
+      <div id="layer-a" class="media-layer fade-visible"></div>
+      <div id="layer-b" class="media-layer fade-hidden"></div>
+    </div>
+  </div>
+
+  <div id="debug-msg">Disconnected</div>
+
+  <script>
+    let settings = {
+      ratio: '16:9',
+      customWidth: 1920,
+      customHeight: 1080,
+      fit: 'contain',
+      displayMode: 'manual',
+      interval: 10,
+      waitVideo: true,
+      transition: 'fade',
+      transitionSpeed: 500,
+      activeMediaId: null,
+      mediaList: []
+    };
+
+    let socket;
+    let slideTimer = null;
+    let activeLayerId = 'layer-a'; // 'layer-a' or 'layer-b'
+    let wsReconnectTimer = null;
+
+    // Analytics exposure tracker state
+    let currentMediaId = null;
+    let currentFilename = "";
+    let displayStart = 0;
+    let loadStart = 0;
+    let currentLoadTimeMs = 0;
+
+    // Helper to construct complete URLs, handling local file:/// paths inside OBS
+    function getServerUrl(path) {
+      const host = window.location.host || 'localhost:3000';
+      const protocol = window.location.protocol === 'file:' ? 'http:' : window.location.protocol;
+      return `${protocol}//${host}${path}`;
+    }
+
+    // Helper to print debug info (useful for setting up in OBS)
+    function showDebug(msg, duration = 3000, isError = false) {
+      const el = document.getElementById('debug-msg');
+      el.innerText = msg;
+      el.classList.add('show');
+      if (isError) {
+        el.style.backgroundColor = 'rgba(220, 38, 38, 0.95)'; // bright red for errors
+        el.style.fontWeight = 'bold';
+        // sticky error
+        clearTimeout(el.timer);
+      } else {
+        el.style.backgroundColor = 'rgba(0, 0, 0, 0.85)';
+        el.style.fontWeight = 'normal';
+        clearTimeout(el.timer);
+        el.timer = setTimeout(() => {
+          el.classList.remove('show');
+        }, duration);
+      }
+    }
+
+    // Capture global JS errors and display them on-screen inside OBS for instant diagnostics
+    window.onerror = function(message, source, lineno, colno, error) {
+      const cleanSource = source ? source.substring(source.lastIndexOf('/') + 1) : 'unknown';
+      showDebug(`[JS Error] ${message} (${cleanSource}:${lineno})`, 10000, true);
+      return false;
+    };
+
+    window.onunhandledrejection = function(event) {
+      showDebug(`[Promise Error] ${event.reason}`, 10000, true);
+    };
+
+    // Connect WebSocket
+    function connectWS() {
+      const host = window.location.host || 'localhost:3000';
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${host}`;
+      
+      socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        console.log('OBS connected to server.');
+        showDebug('OBS Overlay: Connected', 3000);
+        clearTimeout(wsReconnectTimer);
+      };
+
+      socket.onerror = (err) => {
+        showDebug('Connection failed. Is the Streaming Server running? Run Start-Stream-Banner-Manager.bat', 5000, true);
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'settings_update') {
+            const oldMode = settings.displayMode;
+            const oldActiveId = settings.activeMediaId;
+            const oldRatio = settings.ratio;
+            const oldFit = settings.fit;
+            const oldCustomW = settings.customWidth;
+            const oldCustomH = settings.customHeight;
+
+            settings = message.data;
+
+            // Apply ratio and fit if changed
+            if (oldRatio !== settings.ratio || oldCustomW !== settings.customWidth || oldCustomH !== settings.customHeight) {
+              applyRatioStyle();
+            }
+            if (oldFit !== settings.fit) {
+              applyFitStyle();
+            }
+
+            // Sync rotation triggers if modes or catalog changed
+            handleActiveStateChange(oldMode, oldActiveId);
+          }
+        } catch (err) {
+          console.error('WS parsing error:', err);
+        }
+      };
+
+      socket.onclose = () => {
+        console.log('OBS connection lost. Reconnecting...');
+        showDebug('OBS Overlay: Disconnected', 5000);
+        // Retry connection every 2s
+        wsReconnectTimer = setTimeout(connectWS, 2000);
+      };
+    }
+
+    // Setup aspect ratio size boundaries (supports custom pixel sizes)
+    function applyRatioStyle() {
+      const container = document.getElementById('ratio-container');
+      const ratio = settings.ratio;
+
+      if (ratio === 'free') {
+        container.style.width = '100%';
+        container.style.height = '100%';
+        return;
+      }
+
+      let targetRatio = 16 / 9;
+
+      if (ratio === 'custom') {
+        const cw = settings.customWidth || 1920;
+        const ch = settings.customHeight || 1080;
+        targetRatio = cw / ch;
+      } else {
+        const [rWidth, rHeight] = ratio.split(/[:x]/).map(Number);
+        if (rWidth && rHeight) {
+          targetRatio = rWidth / rHeight;
+        }
+      }
+
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const windowRatio = vw / vh;
+
+      if (windowRatio > targetRatio) {
+        // Window is wider than ratio. Lock height to window height, scale width.
+        container.style.height = `${vh}px`;
+        container.style.width = `${vh * targetRatio}px`;
+      } else {
+        // Window is taller than ratio. Lock width to window width, scale height.
+        container.style.width = `${vw}px`;
+        container.style.height = `${vw / targetRatio}px`;
+      }
+    }
+
+    // Update object-fit styling on currently active layers
+    function applyFitStyle() {
+      const fit = settings.fit || 'contain';
+      document.querySelectorAll('.media-layer img, .media-layer video').forEach(el => {
+        el.style.objectFit = fit;
+      });
+    }
+
+    // Monitor transitions and decide what to show
+    function handleActiveStateChange(oldMode, oldActiveId) {
+      if (settings.displayMode === 'manual') {
+        // Manual casting mode
+        clearTimeout(slideTimer);
+        slideTimer = null;
+        
+        if (settings.activeMediaId !== currentMediaId) {
+          showMediaItem(settings.activeMediaId);
+        }
+      } else {
+        // Slideshow Mode
+        const activePool = getActiveSlideshowPool();
+        if (activePool.length === 0) {
+          // No active elements! Clear overlay
+          clearTimeout(slideTimer);
+          slideTimer = null;
+          clearOverlay();
+        } else {
+          // Check if we need to start or restart slideshow
+          const isCurrentActiveInPool = activePool.some(m => m.id === currentMediaId);
+          if (!isCurrentActiveInPool || oldMode !== 'slideshow') {
+            clearTimeout(slideTimer);
+            showMediaItem(activePool[0].id);
+          } else {
+            // Already cycling. But settings may have updated interval or waitVideo. Ensure timer reflects.
+            resetSlideshowTimer();
+          }
+        }
+      }
+    }
+
+    // Filter active items from list
+    function getActiveSlideshowPool() {
+      return (settings.mediaList || [])
+        .filter(m => m.active === true)
+        .sort((a, b) => a.order - b.order);
+    }
+
+    // Display a media item using transitions, incorporating accurate load time calculators
+    function showMediaItem(mediaId) {
+      const mediaList = settings.mediaList || [];
+      const media = mediaList.find(m => m.id === mediaId);
+
+      // Log previous display duration stats before replacing
+      logPreviousDisplayStats();
+
+      if (!media) {
+        clearOverlay();
+        return;
+      }
+
+      currentMediaId = mediaId;
+      currentFilename = media.filename;
+
+      // Start calculating load time
+      loadStart = performance.now();
+
+      // Swap active and inactive layer pointers
+      const inactiveLayerId = activeLayerId === 'layer-a' ? 'layer-b' : 'layer-a';
+      const activeLayer = document.getElementById(activeLayerId);
+      const inactiveLayer = document.getElementById(inactiveLayerId);
+
+      // Setup transitions speeds
+      document.documentElement.style.setProperty('--transition-speed', `${settings.transitionSpeed}ms`);
+
+      let htmlContent = '';
+      const loopVideo = settings.displayMode === 'manual' || !settings.waitVideo;
+      const mediaUrl = getServerUrl('/media/' + media.filename);
+
+      if (media.type === 'video') {
+        htmlContent = `
+          <video src="${mediaUrl}" 
+                 style="object-fit: ${settings.fit || 'contain'};"
+                 autoplay 
+                 playsinline
+                 ${loopVideo ? 'loop' : ''}></video>
+        `;
+      } else {
+        htmlContent = `
+          <img src="${mediaUrl}" 
+               style="object-fit: ${settings.fit || 'contain'};">
+        `;
+      }
+
+      inactiveLayer.innerHTML = htmlContent;
+
+      const videoEl = inactiveLayer.querySelector('video');
+      if (videoEl) {
+        // Auto-play videos with audio unmuted for OBS stream routing
+        videoEl.play().catch(err => {
+          console.warn('Video failed to auto-play, trying muted:', err);
+          videoEl.muted = true;
+          videoEl.play().catch(e => console.error('Video blocked completely:', e));
+        });
+
+        // Trigger transition only after video starts decoding to prevent frames glitch
+        videoEl.onloadeddata = () => {
+          currentLoadTimeMs = performance.now() - loadStart;
+          displayStart = Date.now();
+          performTransition(activeLayer, inactiveLayer, inactiveLayerId);
+        };
+      } else {
+        const imgEl = inactiveLayer.querySelector('img');
+        if (imgEl.complete) {
+          currentLoadTimeMs = performance.now() - loadStart;
+          displayStart = Date.now();
+          performTransition(activeLayer, inactiveLayer, inactiveLayerId);
+        } else {
+          imgEl.onload = () => {
+            currentLoadTimeMs = performance.now() - loadStart;
+            displayStart = Date.now();
+            performTransition(activeLayer, inactiveLayer, inactiveLayerId);
+          };
+        }
+      }
+    }
+
+    // Swap layer opacity and positioning based on Selected Transition Effect
+    function performTransition(activeLayer, inactiveLayer, inactiveLayerId) {
+      const effect = settings.transition || 'fade';
+      const speed = settings.transitionSpeed || 500;
+
+      // Add transition classes
+      activeLayer.classList.add('transition-active');
+      inactiveLayer.classList.add('transition-active');
+
+      // Remove all positioning classes to reset
+      activeLayer.className = 'media-layer transition-active';
+      inactiveLayer.className = 'media-layer transition-active';
+
+      // Set starting points for INACTIVE layer and ending points for ACTIVE layer
+      if (effect === 'fade') {
+        activeLayer.classList.add('fade-visible');
+        inactiveLayer.classList.add('fade-hidden');
+        
+        inactiveLayer.offsetHeight; // Force reflow
+
+        activeLayer.classList.replace('fade-visible', 'fade-hidden');
+        inactiveLayer.classList.replace('fade-hidden', 'fade-visible');
+
+      } else if (effect === 'slide-h') {
+        activeLayer.classList.add('slide-h-visible');
+        inactiveLayer.classList.add('slide-h-right');
+        
+        inactiveLayer.offsetHeight;
+
+        activeLayer.classList.replace('slide-h-visible', 'slide-h-left');
+        inactiveLayer.classList.replace('slide-h-right', 'slide-h-visible');
+
+      } else if (effect === 'slide-v') {
+        activeLayer.classList.add('slide-v-visible');
+        inactiveLayer.classList.add('slide-v-bottom');
+        
+        inactiveLayer.offsetHeight;
+
+        activeLayer.classList.replace('slide-v-visible', 'slide-v-top');
+        inactiveLayer.classList.replace('slide-v-bottom', 'slide-v-visible');
+
+      } else if (effect === 'zoom') {
+        activeLayer.classList.add('zoom-visible');
+        inactiveLayer.classList.add('zoom-hidden');
+        
+        inactiveLayer.offsetHeight;
+
+        activeLayer.classList.replace('zoom-visible', 'zoom-hidden');
+        inactiveLayer.classList.replace('zoom-hidden', 'zoom-visible');
+
+      } else { // 'none' / instant
+        activeLayer.className = 'media-layer none-hidden';
+        inactiveLayer.className = 'media-layer none-visible';
+      }
+
+      // Update active layer pointer
+      activeLayerId = inactiveLayerId;
+
+      // Once transition completes, clear old media on the inactive layer to save cpu/ram
+      setTimeout(() => {
+        activeLayer.innerHTML = '';
+        activeLayer.className = 'media-layer fade-hidden'; // Reset class state
+        activeLayer.classList.remove('transition-active');
+        
+        // Trigger next slideshow timer setup
+        if (settings.displayMode === 'slideshow') {
+          setupSlideshowTimer();
+        }
+      }, speed);
+    }
+
+    // Calculates on-screen duration and posts events to backend REST endpoints
+    function logPreviousDisplayStats() {
+      if (currentMediaId && displayStart) {
+        const displayDurationSec = (Date.now() - displayStart) / 1000;
+        
+        // Push exposure data payload back to server
+        const payload = JSON.stringify({
+          mediaId: currentMediaId,
+          filename: currentFilename,
+          loadTimeMs: Math.round(currentLoadTimeMs),
+          duration: displayDurationSec,
+          timestamp: Date.now()
+        });
+
+        fetch(getServerUrl('/api/tracking/event'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload
+        }).catch(err => console.error('Error logging exposure stats:', err));
+      }
+
+      // Reset timers
+      displayStart = 0;
+    }
+
+    // Exit keepalive tracker (logs final showing banner on scene changes/unload)
+    window.addEventListener('beforeunload', () => {
+      if (currentMediaId && displayStart) {
+        const displayDurationSec = (Date.now() - displayStart) / 1000;
+        const payload = JSON.stringify({
+          mediaId: currentMediaId,
+          filename: currentFilename,
+          loadTimeMs: Math.round(currentLoadTimeMs),
+          duration: displayDurationSec,
+          timestamp: Date.now()
+        });
+
+        // Use standard sync keepalive fetch to log final metrics before thread terminates
+        fetch(getServerUrl('/api/tracking/event'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          keepalive: true
+        }).catch(() => {});
+      }
+    });
+
+    // Set up slideshow automatic timer
+    function setupSlideshowTimer() {
+      clearTimeout(slideTimer);
+      slideTimer = null;
+
+      if (settings.displayMode !== 'slideshow') return;
+
+      const activePool = getActiveSlideshowPool();
+      if (activePool.length <= 1) return; // No need to cycle if only 1 item
+
+      const currentActiveLayer = document.getElementById(activeLayerId);
+      const activeVideo = currentActiveLayer.querySelector('video');
+
+      if (activeVideo && settings.waitVideo) {
+        // Video ends handler: advance immediately on ended
+        activeVideo.loop = false; // ensure it doesn't loop
+        activeVideo.onended = () => {
+          console.log('Video ended, advancing slide.');
+          advanceSlide();
+        };
+      } else {
+        // Default timer-based advancement
+        const intervalMs = (settings.interval || 10) * 1000;
+        slideTimer = setTimeout(() => {
+          advanceSlide();
+        }, intervalMs);
+      }
+    }
+
+    // Reset current slideshow timer (e.g. if settings changed mid-slide)
+    function resetSlideshowTimer() {
+      if (settings.displayMode !== 'slideshow') {
+        clearTimeout(slideTimer);
+        slideTimer = null;
+        return;
+      }
+      setupSlideshowTimer();
+    }
+
+    // Advance to next active item in slideshow rotation
+    function advanceSlide() {
+      const activePool = getActiveSlideshowPool();
+      if (activePool.length === 0) return;
+
+      let nextIndex = 0;
+      const currentIndex = activePool.findIndex(m => m.id === currentMediaId);
+
+      if (currentIndex !== -1 && currentIndex < activePool.length - 1) {
+        nextIndex = currentIndex + 1;
+      }
+
+      showMediaItem(activePool[nextIndex].id);
+    }
+
+    // Empty overlay
+    function clearOverlay() {
+      logPreviousDisplayStats();
+      currentMediaId = null;
+      currentFilename = "";
+      clearTimeout(slideTimer);
+      slideTimer = null;
+      document.getElementById('layer-a').innerHTML = '';
+      document.getElementById('layer-b').innerHTML = '';
+      document.getElementById('layer-a').className = 'media-layer fade-visible';
+      document.getElementById('layer-b').className = 'media-layer fade-hidden';
+    }
+
+    // Listen for resize to re-calculate container dimensions
+    window.addEventListener('resize', () => {
+      applyRatioStyle();
+    });
+
+    // Start
+    connectWS();
+    applyRatioStyle();
+  </script>
+</body>
+</html>
