@@ -1,0 +1,35 @@
+{
+  "ratio": "728x90",
+  "customWidth": 1920,
+  "customHeight": 1080,
+  "fit": "cover",
+  "displayMode": "slideshow",
+  "interval": 16,
+  "waitVideo": true,
+  "transition": "fade",
+  "transitionSpeed": 1150,
+  "activeMediaId": "2-subscribe-banner-hhek4",
+  "mediaList": [
+    {
+      "id": "2-subscribe-banner-hhek4",
+      "filename": "2-subscribe-banner.svg",
+      "type": "image",
+      "active": false,
+      "order": 0
+    },
+    {
+      "id": "1-offline-banner-9yjka",
+      "filename": "1-offline-banner.svg",
+      "type": "image",
+      "active": true,
+      "order": 1
+    },
+    {
+      "id": "3-giveaway-banner-cplky",
+      "filename": "3-giveaway-banner.svg",
+      "type": "image",
+      "active": true,
+      "order": 2
+    }
+  ]
+}
