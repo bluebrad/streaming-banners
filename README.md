@@ -42,8 +42,9 @@ You must have **Node.js** installed on your system.
 
 ### **How to Run**
 1.  Download or clone this repository into a folder on your computer.
-2.  Double-click **`Start-Stream-Banner-Manager.bat`**.
-3.  The console will launch, auto-install required dependencies if needed, bind port `3000`, and automatically open your default browser to the **Stream Controller Dashboard**.
+2.  Unzip into a folder where you would like this to run from and unpack node_modules.zip 
+3.  Double-click **`Start-Stream-Banner-Manager.bat`**.
+4.  The console will launch, auto-install required dependencies if needed, bind port `3000`, and automatically open your default browser to the **Stream Controller Dashboard**.
 
 *Note: Keep the terminal window open while streaming! It runs the local server that streams your assets directly into OBS.*
 
@@ -70,3 +71,8 @@ You must have **Node.js** installed on your system.
 *   **Backend:** Node.js, [Express](https://expressjs.com/) (Web Server), [Multer](https://github.com/expressjs/multer) (Multipart File Handler), and `ws` (High-performance WebSockets).
 *   **Frontend UI:** Vanilla JavaScript, [Tailwind CSS CDN](https://tailwindcss.com/) (Modern Dark Layout), and [FontAwesome CDN](https://fontawesome.com/) (Icon Elements).
 *   **Analytics Charts:** [Chart.js](https://www.chartjs.org/) (Interactive Vector Line Graphs).
+
+---
+
+## See the demo video
+* https://youtu.be/EXoSnSLBUtw 
